@@ -38,8 +38,6 @@ defmodule Bluegreen.PagerDuty do
 
         :post
         |> Finch.build(@url, [{"content-type", "application/json"}], body)
-        # Short enough to fit in the machine's kill timeout when the probe
-        # resolves its alert on shutdown.
         |> Finch.request(Bluegreen.Finch, receive_timeout: 3_000)
         |> handle_response(event_action, dedup_key)
     end

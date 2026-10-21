@@ -26,11 +26,11 @@ defmodule Bluegreen.SixPNProbeTest do
       assert state.last_failure == %{peer: "fdaa::1:2", error: "timeout"}
     end
 
-    test "re-triggers every five failures while alerting" do
+    test "triggers only once while alerting" do
       {_state, actions} = apply_results(%State{}, List.duplicate(@failure, 14))
 
       triggers = for {:trigger, i} <- Enum.with_index(actions, 1), do: i
-      assert triggers == [4, 9, 14]
+      assert triggers == [4]
     end
 
     test "a success resets the failure streak" do
@@ -48,6 +48,12 @@ defmodule Bluegreen.SixPNProbeTest do
       assert actions == [:none, :none, :none, :trigger, :none, :none, :resolve]
       refute state.alerting
       assert state.last_failure == nil
+    end
+
+    test "a new machine resolves once after three successes, without having alerted" do
+      {_state, actions} = apply_results(%State{}, List.duplicate({:ok, @peer}, 6))
+
+      assert actions == [:none, :none, :resolve, :none, :none, :none]
     end
 
     test "skips don't count either way" do

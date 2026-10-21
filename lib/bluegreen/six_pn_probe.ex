@@ -16,15 +16,10 @@ defmodule Bluegreen.SixPNProbe do
   has dropped out of DNS by the time we look again is a peer that went away,
   not a 6PN failure, and doesn't count.
 
-  There is one alert per region (`flybg-6pn-<region>`), and only a machine that
-  triggered it ever resolves it, so a healthy machine in the region can't close
-  a broken one's alert during a bluegreen overlap. It is resolved when the
-  probe recovers, or when the machine shuts down, since a replaced machine
-  can't recover and the page has already gone out.
-
-  Two machines in a region can be failing at once, and the first to recover or
-  shut down resolves the shared alert. So while alerting we re-trigger every
-  `@retrigger_every` failures, which reopens it if the other machine closed it.
+  There is one alert per region (`flybg-6pn-<region>`). Any machine that
+  completes `@recovery_threshold` probes in a row resolves it, whether or not
+  it triggered it, so an alert stays open until a machine in the region shows
+  6PN working again.
   """
   use GenServer
 
@@ -36,9 +31,6 @@ defmodule Bluegreen.SixPNProbe do
   @request_timeout_ms 2_000
   @failure_threshold 4
   @recovery_threshold 3
-  # About every 5 minutes at @interval_ms, well inside a machine's ~15 minute
-  # lifetime.
-  @retrigger_every 5
 
   defmodule State do
     defstruct [
@@ -61,9 +53,6 @@ defmodule Bluegreen.SixPNProbe do
 
   @impl true
   def init(opts) do
-    # Trap exits so terminate/2 runs on shutdown and can resolve our alert.
-    Process.flag(:trap_exit, true)
-
     state = %State{
       app: Keyword.fetch!(opts, :app),
       machine_id: Keyword.fetch!(opts, :machine_id),
@@ -91,21 +80,15 @@ defmodule Bluegreen.SixPNProbe do
     {:noreply, state}
   end
 
-  @impl true
-  def terminate(_reason, %State{alerting: true} = state) do
-    Logger.info("6pn probe: machine shutting down, resolving its alert")
-    Bluegreen.PagerDuty.resolve(dedup_key(state))
-  end
-
-  def terminate(_reason, _state), do: :ok
-
   @doc false
   # Applies one probe result to the state and decides whether to page. Public
   # only so the thresholds can be exercised directly in tests.
   def record(state, {:ok, _peer}, _now) do
     state = %{state | failures: 0, successes: state.successes + 1}
 
-    if state.alerting and state.successes >= @recovery_threshold do
+    # Resolve once per success streak, alerting or not: this is how a new
+    # machine closes an alert left behind by one that was replaced.
+    if state.successes == @recovery_threshold do
       {%{state | alerting: false, first_failure_at: nil, last_failure: nil}, :resolve}
     else
       {state, :none}
@@ -121,15 +104,10 @@ defmodule Bluegreen.SixPNProbe do
         last_failure: failure
     }
 
-    cond do
-      not state.alerting and state.failures >= @failure_threshold ->
-        {%{state | alerting: true}, :trigger}
-
-      state.alerting and rem(state.failures - @failure_threshold, @retrigger_every) == 0 ->
-        {state, :trigger}
-
-      true ->
-        {state, :none}
+    if not state.alerting and state.failures >= @failure_threshold do
+      {%{state | alerting: true}, :trigger}
+    else
+      {state, :none}
     end
   end
 

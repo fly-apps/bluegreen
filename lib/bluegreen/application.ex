@@ -22,9 +22,7 @@ defmodule Bluegreen.Application do
       BluegreenWeb.Endpoint
     ]
 
-    # Probe other machines over 6PN, only where it's configured (on Fly). It
-    # starts last so it stops first on shutdown, while Finch is still up to
-    # resolve its alert.
+    # Probe other machines over 6PN, only when it's configured (on Fly).
     children =
       case Application.get_env(:bluegreen, Bluegreen.SixPNProbe) do
         nil -> children
