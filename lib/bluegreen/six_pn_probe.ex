@@ -3,11 +3,6 @@ defmodule Bluegreen.SixPNProbe do
   Probes other flybg machines over 6PN and pages when this machine can't reach
   them.
 
-  ATC replaces every flybg machine every 15 minutes, so both ends of each probe
-  are machines that were placed recently, on whichever hosts the scheduler
-  picked. That exercises the first-packet path for new machines (neighbor miss,
-  s6pnforwarderd, a fresh /128 route) that long-lived checks rarely hit.
-
   Every `@interval_ms` we resolve `<app>.internal`, pick one of the other
   machines at random and GET its health check. The address we pick is always
   logged. Any IPv4 answer fails the probe, since 6PN is IPv6 only.
