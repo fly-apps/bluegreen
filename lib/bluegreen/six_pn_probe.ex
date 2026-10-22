@@ -66,8 +66,8 @@ defmodule Bluegreen.SixPNProbe do
     {state, action} = record(state, result, DateTime.utc_now())
 
     case action do
-      :trigger -> Bluegreen.PagerDuty.trigger(dedup_key(state), alert_payload(state))
-      :resolve -> Bluegreen.PagerDuty.resolve(dedup_key(state))
+      :trigger -> Bluegreen.IncidentIo.trigger(dedup_key(state), alert_event(state))
+      :resolve -> Bluegreen.IncidentIo.resolve(dedup_key(state), alert_event(state))
       :none -> :ok
     end
 
@@ -189,23 +189,28 @@ defmodule Bluegreen.SixPNProbe do
 
   defp dedup_key(state), do: "flybg-6pn-#{state.region}"
 
-  defp alert_payload(state) do
+  @doc false
+  # Public so the payload shape can be asserted in tests.
+  def alert_event(state) do
     %{
-      payload: %{
-        summary:
-          "flybg machine #{state.machine_id} (#{state.region}) can't reach other flybg machines over 6PN",
-        source: "#{state.app}/#{state.machine_id}",
+      title: "flybg 6PN unreachable in #{state.region}",
+      description:
+        "flybg machine #{state.machine_id} (#{state.region}) can't reach other flybg " <>
+          "machines over 6PN.",
+      # Alert routes read severity and region from here; incident.io cannot see
+      # anything at the top level of the payload.
+      metadata: %{
         severity: "error",
-        custom_details: %{
-          machine_id: state.machine_id,
-          region: state.region,
-          self_6pn: state.self_ip && format_ip(state.self_ip),
-          peer: state.last_failure[:peer],
-          error: state.last_failure[:error],
-          consecutive_failures: state.failures,
-          first_failure_at: state.first_failure_at,
-          find_host: "corrosion: SELECT node FROM machines WHERE id = '#{state.machine_id}'"
-        }
+        team: "platform",
+        source: "#{state.app}/#{state.machine_id}",
+        machine_id: state.machine_id,
+        region: state.region,
+        self_6pn: state.self_ip && format_ip(state.self_ip),
+        peer: state.last_failure[:peer],
+        error: state.last_failure[:error],
+        consecutive_failures: state.failures,
+        first_failure_at: state.first_failure_at,
+        find_host: "corrosion: SELECT node FROM machines WHERE id = '#{state.machine_id}'"
       }
     }
   end

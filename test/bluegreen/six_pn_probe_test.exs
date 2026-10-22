@@ -74,4 +74,29 @@ defmodule Bluegreen.SixPNProbeTest do
                SixPNProbe.select_peers([@peer], [{10, 0, 0, 1}], @self)
     end
   end
+
+  describe "alert_event/1" do
+    test "keeps everything routable under metadata" do
+      state = %State{
+        app: "flybg",
+        machine_id: "48e2",
+        region: "ord",
+        self_ip: @self,
+        failures: 4,
+        first_failure_at: @now,
+        last_failure: %{peer: "fdaa::1:2", error: "timeout"}
+      }
+
+      event =
+        Bluegreen.IncidentIo.alert_event("flybg-6pn-ord", "firing", SixPNProbe.alert_event(state))
+
+      assert event.deduplication_key == "flybg-6pn-ord"
+      assert event.title == "flybg 6PN unreachable in ord"
+      # incident.io alert routes cannot read the top level of the payload.
+      assert event.metadata.severity == "error"
+      assert event.metadata.region == "ord"
+      assert event.metadata.peer == "fdaa::1:2"
+      refute Map.has_key?(event, :severity)
+    end
+  end
 end

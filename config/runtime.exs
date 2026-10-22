@@ -38,7 +38,12 @@ if config_env() == :prod do
 
   config :bluegreen, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
-  config :bluegreen, Bluegreen.PagerDuty, routing_key: System.get_env("PAGERDUTY_ROUTING_KEY")
+  # incident.io HTTP alert source. The config id and its bearer token are
+  # issued together when the alert source is created in the incident.io
+  # console; with either unset Bluegreen.IncidentIo no-ops.
+  config :bluegreen, Bluegreen.IncidentIo,
+    alert_source_config_id: System.get_env("INCIDENT_IO_ALERT_SOURCE_CONFIG_ID"),
+    token: System.get_env("INCIDENT_IO_TOKEN")
 
   # Only run the 6PN probe on Fly machines.
   if machine_id = System.get_env("FLY_MACHINE_ID") do
