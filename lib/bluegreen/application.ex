@@ -8,12 +8,13 @@ defmodule Bluegreen.Application do
   @impl true
   def start(_type, _args) do
     children = [
+      Bluegreen.PromEx,
       BluegreenWeb.Telemetry,
       {DNSCluster, query: Application.get_env(:bluegreen, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Bluegreen.PubSub},
-      # Start the Finch HTTP client for sending emails, paging and the 6PN
-      # probe. Mint's default 30s connect timeout would stall the probe on a
-      # broken 6PN path, so keep connects short.
+      # Start the Finch HTTP client for sending emails and the 6PN probe.
+      # Mint's default 30s connect timeout would stall the probe on a broken
+      # 6PN path, so keep connects short.
       {Finch,
        name: Bluegreen.Finch, pools: %{default: [conn_opts: [transport_opts: [timeout: 2_000]]]}},
       # Start a worker by calling: Bluegreen.Worker.start_link(arg)

@@ -38,19 +38,10 @@ if config_env() == :prod do
 
   config :bluegreen, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
-  # incident.io HTTP alert source. The config id and its bearer token are
-  # issued together when the alert source is created in the incident.io
-  # console; with either unset Bluegreen.IncidentIo no-ops.
-  config :bluegreen, Bluegreen.IncidentIo,
-    alert_source_config_id: System.get_env("INCIDENT_IO_ALERT_SOURCE_CONFIG_ID"),
-    token: System.get_env("INCIDENT_IO_TOKEN")
-
   # Only run the 6PN probe on Fly machines.
-  if machine_id = System.get_env("FLY_MACHINE_ID") do
+  if System.get_env("FLY_MACHINE_ID") do
     config :bluegreen, Bluegreen.SixPNProbe,
       app: System.fetch_env!("FLY_APP_NAME"),
-      machine_id: machine_id,
-      region: System.get_env("FLY_REGION"),
       self_ip: System.get_env("FLY_PRIVATE_IP"),
       port: port
   end

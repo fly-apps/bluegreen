@@ -37,6 +37,10 @@ defmodule BluegreenWeb.Endpoint do
     param_key: "request_logger",
     cookie_key: "request_logger"
 
+  # Before Plug.Telemetry on purpose: a Prometheus scrape every 15 s should
+  # not produce a request log line and its own metrics.
+  plug PromEx.Plug, prom_ex_module: Bluegreen.PromEx
+
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
 
