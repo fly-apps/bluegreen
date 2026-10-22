@@ -38,6 +38,18 @@ if config_env() == :prod do
 
   config :bluegreen, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
+  config :bluegreen, Bluegreen.PagerDuty, routing_key: System.get_env("PAGERDUTY_ROUTING_KEY")
+
+  # Only run the 6PN probe on Fly machines.
+  if machine_id = System.get_env("FLY_MACHINE_ID") do
+    config :bluegreen, Bluegreen.SixPNProbe,
+      app: System.fetch_env!("FLY_APP_NAME"),
+      machine_id: machine_id,
+      region: System.get_env("FLY_REGION"),
+      self_ip: System.get_env("FLY_PRIVATE_IP"),
+      port: port
+  end
+
   config :bluegreen, BluegreenWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
     http: [
