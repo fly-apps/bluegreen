@@ -1,7 +1,6 @@
 defmodule Bluegreen.SixPNProbe do
   @moduledoc """
-  Probes other flybg machines over 6PN and pages when this machine can't reach
-  them.
+  Probes other flybg machines over 6PN and publishes how badly it is going.
 
   Every `@interval_ms` we resolve `<app>.internal`, pick one of the other
   machines at random and GET its health check. The address we pick is always
@@ -11,12 +10,21 @@ defmodule Bluegreen.SixPNProbe do
   has dropped out of DNS by the time we look again is a peer that went away,
   not a 6PN failure, and doesn't count.
 
-  There is one alert per region (`flybg-6pn-<region>`). Any machine that
-  completes `@recovery_threshold` probes in a row resolves it, whether or not
-  it triggered it, so an alert stays open until a machine in the region shows
-  6PN working again.
+  This GenServer decides nothing about paging. It exports the consecutive
+  failure count as `fly_flybg_6pn_consecutive_failures` (see
+  `Bluegreen.SixPNProbe.PromExPlugin`) and the alert lives in
+  superfly/squawk-checks as `flybg_6pn_unreachable`, which thresholds
+  `max by (region)` of the gauge. Two consequences worth knowing:
+
+  - A machine that is replaced mid-failure stops exporting, so its series goes
+    stale and the alert clears itself. The old per-region dedup key existed to
+    get that same property by hand.
+  - A region stays alerting while *any* machine in it is still failing, which
+    is what the cross-machine recovery rule was reaching for.
   """
   use GenServer
+
+  alias Bluegreen.SixPNProbe.PromExPlugin
 
   require Logger
 
@@ -24,21 +32,13 @@ defmodule Bluegreen.SixPNProbe do
   @boot_grace_ms 30_000
   @interval_ms 60_000
   @request_timeout_ms 2_000
-  @failure_threshold 4
-  @recovery_threshold 3
 
   defmodule State do
     defstruct [
       :app,
-      :machine_id,
-      :region,
       :self_ip,
       :port,
-      failures: 0,
-      successes: 0,
-      alerting: false,
-      first_failure_at: nil,
-      last_failure: nil
+      failures: 0
     ]
   end
 
@@ -48,10 +48,11 @@ defmodule Bluegreen.SixPNProbe do
 
   @impl true
   def init(opts) do
+    # No machine id or region here: Fly's Prometheus stamps `instance`, `region`
+    # and `app` onto every scraped series, so the probe would only be competing
+    # with the scraper for those labels.
     state = %State{
       app: Keyword.fetch!(opts, :app),
-      machine_id: Keyword.fetch!(opts, :machine_id),
-      region: Keyword.get(opts, :region),
       self_ip: parse_ip(Keyword.get(opts, :self_ip)),
       port: Keyword.fetch!(opts, :port)
     }
@@ -62,52 +63,24 @@ defmodule Bluegreen.SixPNProbe do
 
   @impl true
   def handle_info(:probe, state) do
-    result = probe(state)
-    {state, action} = record(state, result, DateTime.utc_now())
-
-    case action do
-      :trigger -> Bluegreen.PagerDuty.trigger(dedup_key(state), alert_payload(state))
-      :resolve -> Bluegreen.PagerDuty.resolve(dedup_key(state))
-      :none -> :ok
-    end
+    state = record(state, probe(state))
+    PromExPlugin.execute_probe_metrics(state.failures)
 
     Process.send_after(self(), :probe, @interval_ms)
     {:noreply, state}
   end
 
   @doc false
-  # Applies one probe result to the state and decides whether to page. Public
-  # only so the thresholds can be exercised directly in tests.
-  def record(state, {:ok, _peer}, _now) do
-    state = %{state | failures: 0, successes: state.successes + 1}
+  # Applies one probe result to the failure streak. Public only so it can be
+  # exercised directly in tests.
+  def record(state, {:ok, _peer}), do: %{state | failures: 0}
 
-    # Resolve once per success streak, alerting or not: this is how a new
-    # machine closes an alert left behind by one that was replaced.
-    if state.successes == @recovery_threshold do
-      {%{state | alerting: false, first_failure_at: nil, last_failure: nil}, :resolve}
-    else
-      {state, :none}
-    end
-  end
+  def record(state, {:error, _failure}), do: %{state | failures: state.failures + 1}
 
-  def record(state, {:error, failure}, now) do
-    state = %{
-      state
-      | failures: state.failures + 1,
-        successes: 0,
-        first_failure_at: state.first_failure_at || now,
-        last_failure: failure
-    }
-
-    if not state.alerting and state.failures >= @failure_threshold do
-      {%{state | alerting: true}, :trigger}
-    else
-      {state, :none}
-    end
-  end
-
-  # Nothing to judge this round: no other machines, or the peer went away.
-  def record(state, :skip, _now), do: {state, :none}
+  # Nothing to judge this round: no other machines, or the peer went away. The
+  # streak is held rather than reset — we learned nothing either way, and the
+  # gauge keeps reporting the last thing we did learn.
+  def record(state, :skip), do: state
 
   defp probe(state) do
     host = "#{state.app}.internal"
@@ -185,29 +158,6 @@ defmodule Bluegreen.SixPNProbe do
       {:ok, %Finch.Response{status: status}} -> {:error, "unexpected status #{status}"}
       {:error, error} -> {:error, Exception.message(error)}
     end
-  end
-
-  defp dedup_key(state), do: "flybg-6pn-#{state.region}"
-
-  defp alert_payload(state) do
-    %{
-      payload: %{
-        summary:
-          "flybg machine #{state.machine_id} (#{state.region}) can't reach other flybg machines over 6PN",
-        source: "#{state.app}/#{state.machine_id}",
-        severity: "error",
-        custom_details: %{
-          machine_id: state.machine_id,
-          region: state.region,
-          self_6pn: state.self_ip && format_ip(state.self_ip),
-          peer: state.last_failure[:peer],
-          error: state.last_failure[:error],
-          consecutive_failures: state.failures,
-          first_failure_at: state.first_failure_at,
-          find_host: "corrosion: SELECT node FROM machines WHERE id = '#{state.machine_id}'"
-        }
-      }
-    }
   end
 
   defp parse_ip(nil), do: nil
