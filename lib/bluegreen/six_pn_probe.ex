@@ -3,8 +3,12 @@ defmodule Bluegreen.SixPNProbe do
   Probes other flybg machines over 6PN and publishes how badly it is going.
 
   Every `@interval_ms` we resolve `<app>.internal`, pick one of the other
-  machines at random and GET its health check. The address we pick is always
-  logged. Any IPv4 answer fails the probe, since 6PN is IPv6 only.
+  machines at random and open a TCP connection to it. The address we pick is
+  always logged. Any IPv4 answer fails the probe, since 6PN is IPv6 only.
+
+  A refused connection counts as a success: the packet crossed 6PN and
+  something answered. Whether the peer's app is healthy is a different
+  question, and Fly's own health checks already ask it.
 
   Peers come and go with every deploy, so a failure against an address that
   has dropped out of DNS by the time we look again is a peer that went away,
@@ -31,7 +35,7 @@ defmodule Bluegreen.SixPNProbe do
   # Give the network a moment after boot before probing.
   @boot_grace_ms 30_000
   @interval_ms 60_000
-  @request_timeout_ms 2_000
+  @connect_timeout_ms 2_000
 
   defmodule State do
     defstruct [
@@ -93,10 +97,14 @@ defmodule Bluegreen.SixPNProbe do
       {:ok, peers} ->
         peer = Enum.random(peers)
         addr = "[#{format_ip(peer)}]:#{state.port}"
-        Logger.info("6pn probe: querying #{addr}")
+        Logger.info("6pn probe: connecting to #{addr}")
 
-        case get(addr) do
+        case connect(peer, state.port) do
           :ok ->
+            {:ok, peer}
+
+          :refused ->
+            Logger.info("6pn probe: #{addr} refused the connection, so 6PN is up")
             {:ok, peer}
 
           {:error, reason} ->
@@ -146,17 +154,30 @@ defmodule Bluegreen.SixPNProbe do
     peer not in :inet_res.lookup(String.to_charlist(host), :in, :aaaa)
   end
 
-  defp get(addr) do
-    :get
-    |> Finch.build("http://#{addr}/healthcheck")
-    |> Finch.request(Bluegreen.Finch,
-      receive_timeout: @request_timeout_ms,
-      pool_timeout: @request_timeout_ms
-    )
-    |> case do
-      {:ok, %Finch.Response{status: 200}} -> :ok
-      {:ok, %Finch.Response{status: status}} -> {:error, "unexpected status #{status}"}
-      {:error, error} -> {:error, Exception.message(error)}
+  @doc false
+  # Connects to the peer's address instead of a URL built from it. Formatting
+  # the tuple into `http://[fdaa:...]:8080` made the address a *hostname*: an
+  # HTTP client resolved it with the IPv4 family, failed in about a
+  # millisecond with nxdomain, and no packet ever crossed 6PN. The tuple we
+  # already hold from DNS needs no resolver, and its size picks the family.
+  #
+  # Public so a test can prove we can reach an IPv6 literal at all, which is
+  # the part that was broken.
+  def connect(peer, port) do
+    case :gen_tcp.connect(peer, port, [active: false], @connect_timeout_ms) do
+      {:ok, socket} ->
+        :gen_tcp.close(socket)
+        :ok
+
+      # A refusal is a round trip: the packet crossed 6PN and something sent a
+      # reset back. It says nothing about the peer's health, but 6PN is the
+      # only thing this probe asks about. flybg auto-stops its machines, so
+      # most peers are not listening and this is the ordinary case.
+      {:error, :econnrefused} ->
+        :refused
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
